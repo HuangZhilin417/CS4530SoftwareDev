@@ -156,9 +156,7 @@ export default class CoveyTownController {
     this._listeners.forEach(listener => listener.onPlayerMoved(player));
   }
 
-  /**
-   * Removes a player from a conversation area, updating the conversation area's occupants list, 
-   * and emitting the appropriate message (area updated or area destroyed)
+  /**  
    * 
    * Does not update the player's activeConversationArea property.
    * 
