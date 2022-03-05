@@ -10,6 +10,7 @@ import PlayerSession from '../types/PlayerSession';
 import { townSubscriptionHandler } from '../requestHandlers/CoveyTownRequestHandlers';
 import CoveyTownsStore from './CoveyTownsStore';
 import * as TestUtils from '../client/TestUtils';
+import { BoundingBox, ServerConversationArea } from '../client/TownsServiceClient';
 
 const mockTwilioVideo = mockDeep<TwilioVideo>();
 jest.spyOn(TwilioVideo, 'getInstance').mockReturnValue(mockTwilioVideo);
@@ -44,6 +45,7 @@ describe('CoveyTownController', () => {
       );
     });
   });
+
   describe('destorySession', () => {
     let testingTown: CoveyTownController;
     const mockListeners = [
@@ -77,20 +79,383 @@ describe('CoveyTownController', () => {
 
       testingTown.updatePlayerLocation(player1, newLocation);
       testingTown.updatePlayerLocation(player2, newLocation);
-      expect(testingTown.conversationAreas[0].occupantsByID.length).toBe(2);
+      expect(newConversationArea.occupantsByID.length).toBe(2);
 
       testingTown.destroySession(playerOneSession);
       mockListeners.forEach(listener =>
         expect(listener.onConversationAreaUpdated).toBeCalledWith(newConversationArea),
       );
-      expect(testingTown.conversationAreas[0].occupantsByID.length).toBe(1);
+      expect(newConversationArea.occupantsByID.length).toBe(1);
       testingTown.destroySession(playerTwoSession);
       mockListeners.forEach(listener =>
         expect(listener.onConversationAreaDestroyed).toBeCalledWith(newConversationArea),
       );
-      expect(testingTown.conversationAreas[0].occupantsByID.length).toBe(0);
+      expect(newConversationArea.occupantsByID.length).toBe(0);
     });
   });
+
+  describe('updatePlayerLocation', () => {
+    let testingTown: CoveyTownController;
+    const mockListeners = [
+      mock<CoveyTownListener>(),
+      mock<CoveyTownListener>(),
+      mock<CoveyTownListener>(),
+    ];
+    let player1: Player;
+    let player2: Player;
+    let firstConversationArea: ServerConversationArea;
+    let secondConversationArea: ServerConversationArea;
+    let firstConversationAreaLocation: UserLocation;
+    let secondConversationAreaLocation: UserLocation;
+    let emptyConversationAreaLocation: UserLocation;
+    let insideFirstConversationAreaLocation: UserLocation;
+    beforeEach(async () => {
+      const townName = `town listeners and events tests ${nanoid()}`;
+      testingTown = new CoveyTownController(townName, false);
+      const newBoundBox: BoundingBox = {
+        x: 1000,
+        y: 1000,
+        width: 10,
+        height: 10,
+      };
+      const secondAreaInfo = {
+        conversationLabel: 'testing label',
+        conversationTopic: 'testing topic',
+        boundingBox: newBoundBox,
+      };
+      firstConversationArea = TestUtils.createConversationForTesting();
+      secondConversationArea = TestUtils.createConversationForTesting(secondAreaInfo);
+      expect(secondConversationArea.boundingBox).toBe(newBoundBox);
+      expect(secondConversationArea.label).toBe(secondAreaInfo.conversationLabel);
+      expect(secondConversationArea.topic).toBe(secondAreaInfo.conversationTopic);
+      expect(secondConversationArea.occupantsByID.length).toBe(0);
+
+      player1 = new Player('testing player 1');
+      player2 = new Player('testing player 2');
+      expect(player1.userName).toBe('testing player 1');
+      expect(player2.userName).toBe('testing player 2');
+      await testingTown.addPlayer(player1);
+      expect(testingTown.players.length).toBe(1);
+      expect(testingTown.players[0]).toBe(player1);
+      await testingTown.addPlayer(player2);
+      expect(testingTown.players.length).toBe(2);
+      expect(testingTown.players[1]).toBe(player2);
+      testingTown.addConversationArea(firstConversationArea);
+      expect(testingTown.conversationAreas.length).toBe(1);
+      expect(testingTown.conversationAreas[0]).toBe(firstConversationArea);
+      testingTown.addConversationArea(secondConversationArea);
+      expect(testingTown.conversationAreas.length).toBe(2);
+      expect(testingTown.conversationAreas[1]).toBe(secondConversationArea);
+      mockListeners.forEach(mockReset);
+      mockListeners.forEach(listener => testingTown.addTownListener(listener));
+      firstConversationAreaLocation = {
+        moving: false,
+        rotation: 'front',
+        x: 400,
+        y: 400,
+        conversationLabel: firstConversationArea.label,
+      };
+      secondConversationAreaLocation = {
+        moving: false,
+        rotation: 'front',
+        x: newBoundBox.x,
+        y: newBoundBox.y,
+        conversationLabel: secondConversationArea.label,
+      };
+      emptyConversationAreaLocation = {
+        moving: false,
+        rotation: 'front',
+        x: 2000,
+        y: 2000,
+        conversationLabel: '',
+      };
+      insideFirstConversationAreaLocation = {
+        moving: false,
+        rotation: 'front',
+        x: 400,
+        y: 401,
+        conversationLabel: firstConversationArea.label,
+      };
+    });
+    describe('updatePlayerLocation when players move and calls on playerMoved', () => {
+      beforeEach(() => {
+        testingTown.updatePlayerLocation(player1, emptyConversationAreaLocation);
+        expect(player1.location).toBe(emptyConversationAreaLocation);
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        expect(secondConversationArea.occupantsByID.length).toBe(0);
+        expect(testingTown.conversationAreas.length).toBe(2);
+        mockListeners.forEach(listener => expect(listener.onPlayerMoved).toBeCalledWith(player1));
+        testingTown.updatePlayerLocation(player2, emptyConversationAreaLocation);
+        expect(player2.location).toBe(emptyConversationAreaLocation);
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        expect(secondConversationArea.occupantsByID.length).toBe(0);
+        expect(testingTown.conversationAreas.length).toBe(2);
+        mockListeners.forEach(listener => expect(listener.onPlayerMoved).toBeCalledWith(player2));
+        mockListeners.forEach(mockReset);
+      });
+      it('should change the location of the player', async () => {
+        expect(player1.location).not.toBe(firstConversationAreaLocation);
+        expect(player1.isWithin(firstConversationArea)).toBe(false);
+        expect(player1.isWithin(secondConversationArea)).toBe(false);
+        testingTown.updatePlayerLocation(player1, firstConversationAreaLocation);
+        expect(player1.isWithin(firstConversationArea)).toBe(true);
+        expect(player1.isWithin(secondConversationArea)).toBe(false);
+        expect(player1.location).toBe(firstConversationAreaLocation);
+        mockListeners.forEach(listener => expect(listener.onPlayerMoved).toBeCalledWith(player1));
+        testingTown.updatePlayerLocation(player1, secondConversationAreaLocation);
+        expect(player1.location).toBe(secondConversationAreaLocation);
+        mockListeners.forEach(listener => expect(listener.onPlayerMoved).toBeCalledWith(player1));
+      });
+      it('should emit on player moved', async () => {
+        testingTown.updatePlayerLocation(player1, emptyConversationAreaLocation);
+        expect(player1.location).toBe(emptyConversationAreaLocation);
+        expect(testingTown.players[0].location).toBe(emptyConversationAreaLocation);
+        expect(testingTown.players.length).toBe(2);
+        expect(player1.activeConversationArea).toBe(undefined);
+        expect(testingTown.players[0].activeConversationArea).toBe(undefined);
+        mockListeners.forEach(listener => {
+          expect(listener.onPlayerMoved).toBeCalledWith(player1);
+          expect(listener.onPlayerMoved).toBeCalledTimes(1);
+          expect(listener.onConversationAreaUpdated).not.toBeCalled();
+          expect(listener.onConversationAreaDestroyed).not.toBeCalled();
+        });
+      });
+
+      it('should emit on updateConversationArea when a player enters a area', async () => {
+        testingTown.updatePlayerLocation(player1, secondConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaDestroyed).toHaveBeenCalledTimes(0);
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(secondConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onPlayerMoved).toBeCalledWith(player1);
+          expect(listener.onPlayerMoved).toHaveBeenCalledTimes(1);
+        });
+
+        expect(player1.activeConversationArea).toBe(secondConversationArea);
+        expect(player1.isWithin(secondConversationArea)).toBe(true);
+        expect(testingTown.players[0].activeConversationArea).toBe(secondConversationArea);
+        expect(testingTown.players[0].isWithin(secondConversationArea)).toBe(true);
+        expect(secondConversationArea.occupantsByID.length).toBe(1);
+        expect(secondConversationArea.occupantsByID[0]).toBe(player1.id);
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+      });
+
+      it('should emit on updateConversationArea when a player moves in a area', async () => {
+        testingTown.updatePlayerLocation(player1, firstConversationAreaLocation);
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player1, insideFirstConversationAreaLocation);
+        expect(player1.location).toBe(insideFirstConversationAreaLocation);
+        expect(testingTown.players[0].location).toBe(insideFirstConversationAreaLocation);
+        expect(player1.activeConversationArea).toBe(firstConversationArea);
+        expect(player1.isWithin(firstConversationArea)).toBe(true);
+        expect(testingTown.players[0].activeConversationArea).toBe(firstConversationArea);
+        expect(testingTown.players[0].isWithin(firstConversationArea)).toBe(true);
+        expect(firstConversationArea.occupantsByID.length).toBe(1);
+        expect(firstConversationArea.occupantsByID[0]).toBe(player1.id);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).not.toBeCalled();
+          expect(listener.onPlayerMoved).toBeCalledWith(player1);
+          expect(listener.onPlayerMoved).toHaveBeenCalledTimes(1);
+        });
+      });
+      it('should emit on destroy when last player leaves a area', async () => {
+        testingTown.updatePlayerLocation(player1, firstConversationAreaLocation);
+        testingTown.updatePlayerLocation(player1, insideFirstConversationAreaLocation);
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player1, emptyConversationAreaLocation);
+        expect(player1.location).toBe(emptyConversationAreaLocation);
+        expect(testingTown.players[0].location).toBe(emptyConversationAreaLocation);
+        expect(player1.activeConversationArea).toBe(undefined);
+        expect(player1.isWithin(firstConversationArea)).toBe(false);
+        expect(testingTown.players[0].activeConversationArea).toBe(undefined);
+        expect(testingTown.players[0].isWithin(firstConversationArea)).toBe(false);
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaDestroyed).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaUpdated).not.toBeCalled();
+          expect(listener.onConversationAreaDestroyed).toHaveBeenCalledTimes(1);
+          expect(listener.onPlayerMoved).toBeCalledWith(player1);
+          expect(listener.onPlayerMoved).toHaveBeenCalledTimes(1);
+        });
+      });
+
+      it('should remove player from conversation area if player moved to another converationArea', async () => {
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        testingTown.updatePlayerLocation(player1, firstConversationAreaLocation);
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player1, secondConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(secondConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onPlayerMoved).toBeCalledWith(player1);
+          expect(listener.onPlayerMoved).toHaveBeenCalledTimes(1);
+        });
+        expect(player1.activeConversationArea).toBe(secondConversationArea);
+        expect(testingTown.conversationAreas.length).toBe(1);
+        expect(secondConversationArea.occupantsByID.length).toBe(1);
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+      });
+
+      it('should remove players from conversation area if two player left', async () => {
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        testingTown.updatePlayerLocation(player1, firstConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onPlayerMoved).toBeCalledWith(player1);
+          expect(listener.onPlayerMoved).toBeCalledTimes(1);
+          expect(listener.onConversationAreaDestroyed).not.toBeCalled();
+        });
+        expect(player1.activeConversationArea).toBe(firstConversationArea);
+        expect(firstConversationArea.occupantsByID.length).toBe(1);
+        expect(firstConversationArea.occupantsByID[0]).toBe(player1.id);
+
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player2, firstConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onPlayerMoved).toBeCalledWith(player2);
+          expect(listener.onPlayerMoved).toBeCalledTimes(1);
+          expect(listener.onConversationAreaDestroyed).not.toBeCalled();
+        });
+        expect(firstConversationArea.occupantsByID.length).toBe(2);
+        expect(player1.activeConversationArea).toBe(firstConversationArea);
+        expect(player2.activeConversationArea).toBe(firstConversationArea);
+        expect(firstConversationArea.occupantsByID[0]).toBe(player1.id);
+        expect(firstConversationArea.occupantsByID[1]).toBe(player2.id);
+
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player1, emptyConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onConversationAreaDestroyed).not.toBeCalled();
+        });
+        expect(player1.activeConversationArea).toBe(undefined);
+        expect(player2.activeConversationArea).toBe(firstConversationArea);
+        expect(firstConversationArea.occupantsByID.length).toBe(1);
+        expect(firstConversationArea.occupantsByID[0]).toBe(player2.id);
+
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player2, emptyConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).not.toBeCalled();
+          expect(listener.onConversationAreaDestroyed).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaDestroyed).toHaveBeenCalledTimes(1);
+        });
+        expect(player1.activeConversationArea).toBe(undefined);
+        expect(player2.activeConversationArea).toBe(undefined);
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        expect(testingTown.conversationAreas.length).toBe(1);
+      });
+      it('should emit the correct conversationArea for onConversationAreaDestroyed', async () => {
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        testingTown.updatePlayerLocation(player1, secondConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(secondConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onPlayerMoved).toBeCalledWith(player1);
+          expect(listener.onPlayerMoved).toBeCalledTimes(1);
+          expect(listener.onConversationAreaDestroyed).not.toBeCalled();
+        });
+        expect(player1.activeConversationArea).toBe(secondConversationArea);
+        expect(secondConversationArea.occupantsByID.length).toBe(1);
+        expect(secondConversationArea.occupantsByID[0]).toBe(player1.id);
+
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player2, secondConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(secondConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onPlayerMoved).toBeCalledWith(player2);
+          expect(listener.onPlayerMoved).toBeCalledTimes(1);
+          expect(listener.onConversationAreaDestroyed).not.toBeCalled();
+        });
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        expect(secondConversationArea.occupantsByID.length).toBe(2);
+        expect(player1.activeConversationArea).toBe(secondConversationArea);
+        expect(player2.activeConversationArea).toBe(secondConversationArea);
+        expect(secondConversationArea.occupantsByID[0]).toBe(player1.id);
+        expect(secondConversationArea.occupantsByID[1]).toBe(player2.id);
+
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player1, emptyConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(secondConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onConversationAreaDestroyed).not.toBeCalled();
+        });
+        expect(player1.activeConversationArea).toBe(undefined);
+        expect(player2.activeConversationArea).toBe(secondConversationArea);
+        expect(secondConversationArea.occupantsByID.length).toBe(1);
+        expect(secondConversationArea.occupantsByID[0]).toBe(player2.id);
+
+        mockListeners.forEach(mockReset);
+        testingTown.updatePlayerLocation(player2, emptyConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).not.toBeCalled();
+          expect(listener.onConversationAreaDestroyed).toBeCalledWith(secondConversationArea);
+          expect(listener.onConversationAreaDestroyed).toHaveBeenCalledTimes(1);
+        });
+        expect(player1.activeConversationArea).toBe(undefined);
+        expect(player2.activeConversationArea).toBe(undefined);
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        expect(testingTown.conversationAreas.length).toBe(1);
+        expect(testingTown.conversationAreas[0]).toBe(firstConversationArea);
+      });
+
+      it('should be able to updatePlayerLocation between two conversation area', async () => {
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        testingTown.updatePlayerLocation(player1, firstConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(1);
+          expect(listener.onPlayerMoved).toBeCalledWith(player1);
+          expect(listener.onPlayerMoved).toBeCalledTimes(1);
+        });
+        expect(player1.activeConversationArea).toBe(firstConversationArea);
+        expect(firstConversationArea.occupantsByID.length).toBe(1);
+        expect(firstConversationArea.occupantsByID[0]).toBe(player1.id);
+
+        testingTown.updatePlayerLocation(player2, firstConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(2);
+          expect(listener.onPlayerMoved).toBeCalledWith(player2);
+          expect(listener.onPlayerMoved).toBeCalledTimes(2);
+        });
+        expect(firstConversationArea.occupantsByID.length).toBe(2);
+        expect(player1.activeConversationArea).toBe(firstConversationArea);
+        expect(player2.activeConversationArea).toBe(firstConversationArea);
+        expect(firstConversationArea.occupantsByID[0]).toBe(player1.id);
+        expect(firstConversationArea.occupantsByID[1]).toBe(player2.id);
+
+        testingTown.updatePlayerLocation(player1, secondConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(secondConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(4);
+        });
+        expect(secondConversationArea.occupantsByID.length).toBe(1);
+        expect(secondConversationArea.occupantsByID[0]).toBe(player1.id);
+        expect(player1.activeConversationArea).toBe(secondConversationArea);
+        expect(player2.activeConversationArea).toBe(firstConversationArea);
+        testingTown.updatePlayerLocation(player2, secondConversationAreaLocation);
+        mockListeners.forEach(listener => {
+          expect(listener.onConversationAreaUpdated).toBeCalledWith(secondConversationArea);
+          expect(listener.onConversationAreaUpdated).toHaveBeenCalledTimes(5);
+          expect(listener.onConversationAreaDestroyed).toBeCalledWith(firstConversationArea);
+          expect(listener.onConversationAreaDestroyed).toHaveBeenCalledTimes(1);
+        });
+        expect(player1.activeConversationArea).toBe(secondConversationArea);
+        expect(player2.activeConversationArea).toBe(secondConversationArea);
+        expect(firstConversationArea.occupantsByID.length).toBe(0);
+        expect(testingTown.conversationAreas.length).toBe(1);
+      });
+    });
+  });
+
   describe('town listeners and events', () => {
     let testingTown: CoveyTownController;
     const mockListeners = [
