@@ -110,7 +110,7 @@ export function createConversationForTesting(params?: {
   boundingBox?: BoundingBox;
 }): ServerConversationArea {
   return {
-    boundingBox: params?.boundingBox || { height: 100, width: 100, x: 400, y: 400 },
+    boundingBox: params?.boundingBox || { height: 10, width: 10, x: 400, y: 400 },
     label: params?.conversationLabel || nanoid(),
     occupantsByID: [],
     topic: params?.conversationTopic || nanoid(),

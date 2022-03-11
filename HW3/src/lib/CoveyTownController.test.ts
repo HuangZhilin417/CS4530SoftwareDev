@@ -1,11 +1,13 @@
 import { nanoid } from 'nanoid';
 import { mock, mockDeep, mockReset } from 'jest-mock-extended';
 import { Socket } from 'socket.io';
+import { listeners } from 'process';
+import exp from 'constants';
 import TwilioVideo from './TwilioVideo';
 import Player from '../types/Player';
 import CoveyTownController from './CoveyTownController';
 import CoveyTownListener from '../types/CoveyTownListener';
-import { UserLocation } from '../CoveyTypes';
+import { Direction, UserLocation } from '../CoveyTypes';
 import PlayerSession from '../types/PlayerSession';
 import { townSubscriptionHandler } from '../requestHandlers/CoveyTownRequestHandlers';
 import CoveyTownsStore from './CoveyTownsStore';
@@ -652,6 +654,7 @@ describe('CoveyTownController', () => {
       expect(listenerRemoved.onTownDestroyed).not.toBeCalled();
     });
   });
+
   describe('townSubscriptionHandler', () => {
     const mockSocket = mock<Socket>();
     let testingTown: CoveyTownController;
@@ -787,21 +790,515 @@ describe('CoveyTownController', () => {
   });
   describe('addConversationArea', () => {
     let testingTown: CoveyTownController;
-    beforeEach(() => {
+    let player1: Player;
+    let player2: Player;
+    const mockListeners = [
+      mock<CoveyTownListener>(),
+      mock<CoveyTownListener>(),
+      mock<CoveyTownListener>(),
+    ];
+    let firstConversationArea: ServerConversationArea;
+    let firstConversationAreaLocation: UserLocation;
+    beforeEach(async () => {
+      firstConversationAreaLocation = {
+        moving: false,
+        rotation: 'front',
+        x: 1000,
+        y: 1000,
+        conversationLabel: '',
+      };
       const townName = `addConversationArea test town ${nanoid()}`;
       testingTown = new CoveyTownController(townName, false);
+      mockListeners.forEach(listener => {
+        testingTown.addTownListener(listener);
+      });
+      const newBoundBox: BoundingBox = {
+        x: 1000,
+        y: 1000,
+        width: 10,
+        height: 10,
+      };
+      const secondAreaInfo = {
+        conversationLabel: 'testing label',
+        conversationTopic: 'testing topic',
+        boundingBox: newBoundBox,
+      };
+      firstConversationArea = TestUtils.createConversationForTesting(secondAreaInfo);
     });
-    it('should add the conversation area to the list of conversation areas', () => {
-      const newConversationArea = TestUtils.createConversationForTesting();
-      const result = testingTown.addConversationArea(newConversationArea);
-      expect(result).toBe(true);
-      const areas = testingTown.conversationAreas;
-      expect(areas.length).toEqual(1);
-      expect(areas[0].label).toEqual(newConversationArea.label);
-      expect(areas[0].topic).toEqual(newConversationArea.topic);
-      expect(areas[0].boundingBox).toEqual(newConversationArea.boundingBox);
+    describe('should be able to automatically add players if they are in the conversationArea', () => {
+      beforeEach(async () => {
+        player1 = new Player('testing player 1');
+        player2 = new Player('testing player 2');
+        expect(player1.userName).toBe('testing player 1');
+        expect(player2.userName).toBe('testing player 2');
+        await testingTown.addPlayer(player1);
+        await testingTown.addPlayer(player2);
+        testingTown.updatePlayerLocation(player1, firstConversationAreaLocation);
+        testingTown.updatePlayerLocation(player2, firstConversationAreaLocation);
+        mockListeners.forEach(mockReset);
+      });
+      describe('it should not add the empty topic', () => {
+        beforeEach(() => {
+          const newBoundBox: BoundingBox = {
+            x: 1000,
+            y: 1000,
+            width: 10,
+            height: 10,
+          };
+
+          const emptyTopicConversationArea: ServerConversationArea = {
+            boundingBox: newBoundBox,
+            label: 'testing labels',
+            occupantsByID: [],
+            topic: '',
+          };
+          expect(testingTown.addConversationArea(emptyTopicConversationArea)).toBe(false);
+          mockListeners.forEach(listener => {
+            expect(listener.onConversationAreaUpdated).not.toBeCalled();
+          });
+          mockListeners.forEach(mockReset);
+        });
+        describe('it should add a correct converstaionArea', () => {
+          let correctTopicConversationArea: ServerConversationArea;
+          beforeEach(() => {
+            const newBoundBox: BoundingBox = {
+              x: 400,
+              y: 400,
+              width: 10,
+              height: 10,
+            };
+            correctTopicConversationArea = TestUtils.createConversationForTesting();
+            expect(correctTopicConversationArea.boundingBox).toStrictEqual(newBoundBox);
+            expect(testingTown.addConversationArea(correctTopicConversationArea)).toBe(true);
+            expect(testingTown.conversationAreas.length).toBe(1);
+            expect(testingTown.conversationAreas[0]).toBe(correctTopicConversationArea);
+            expect(testingTown.conversationAreas[0].label).toBe(correctTopicConversationArea.label);
+            expect(testingTown.conversationAreas[0].topic).toBe(correctTopicConversationArea.topic);
+            expect(testingTown.conversationAreas[0].occupantsByID).toStrictEqual([]);
+            mockListeners.forEach(listener => {
+              expect(listener.onConversationAreaUpdated).toBeCalledWith(
+                correctTopicConversationArea,
+              );
+              expect(listener.onConversationAreaUpdated).toBeCalledTimes(1);
+            });
+
+            mockListeners.forEach(mockReset);
+          });
+          describe('should add another correct conversationArea', () => {
+            beforeEach(() => {
+              expect(testingTown.addConversationArea(firstConversationArea)).toBe(true);
+              expect(testingTown.conversationAreas.length).toBe(2);
+              expect(testingTown.conversationAreas[0]).toBe(correctTopicConversationArea);
+              expect(testingTown.conversationAreas[1]).toBe(firstConversationArea);
+              mockListeners.forEach(listener => {
+                expect(listener.onConversationAreaUpdated).toBeCalledTimes(1);
+                expect(listener.onConversationAreaUpdated).toBeCalledWith(firstConversationArea);
+              });
+              mockListeners.forEach(mockReset);
+            });
+            it('should add players that is in this conversationArea', () => {
+              expect(firstConversationArea.occupantsByID.length).toBe(2);
+              expect(player1.activeConversationArea).toBe(firstConversationArea);
+              expect(player2.activeConversationArea).toBe(firstConversationArea);
+            });
+            describe('should add players that is in a created conversationArea', () => {
+              it('should add players in created conversationArea', () => {
+                const player = new Player('testing player');
+                testingTown.addPlayer(player);
+                const dir: Direction = 'front';
+                const firstConversationAreaLocations = [
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 600,
+                    y: 600,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 604,
+                    y: 604,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 596,
+                    y: 596,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 602,
+                    y: 596,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 596,
+                    y: 602,
+                    conversationLabel: '',
+                  },
+                ];
+                let newConversationArea: ServerConversationArea;
+                firstConversationAreaLocations.forEach(element => {
+                  mockListeners.forEach(mockReset);
+                  testingTown.updatePlayerLocation(player, element);
+                  const newBoundBox: BoundingBox = {
+                    x: 600,
+                    y: 600,
+                    width: 10,
+                    height: 10,
+                  };
+                  const secondAreaInfo = {
+                    conversationLabel: nanoid(),
+                    conversationTopic: nanoid(),
+                    boundingBox: newBoundBox,
+                  };
+                  newConversationArea = TestUtils.createConversationForTesting(secondAreaInfo);
+                  expect(newConversationArea.occupantsByID.length).toBe(0);
+                  expect(testingTown.addConversationArea(newConversationArea)).toBe(true);
+                  expect(testingTown.conversationAreas.length).toBe(3);
+                  expect(testingTown.conversationAreas[0]).toBe(correctTopicConversationArea);
+                  expect(testingTown.conversationAreas[1]).toBe(firstConversationArea);
+                  expect(testingTown.conversationAreas[2]).toBe(newConversationArea);
+                  expect(newConversationArea.occupantsByID.length).toBe(1);
+                  expect(player.activeConversationArea).toBe(newConversationArea);
+                  mockListeners.forEach(listener => {
+                    expect(listener.onConversationAreaUpdated).toBeCalledTimes(1);
+                    expect(listener.onConversationAreaUpdated).toBeCalledWith(newConversationArea);
+                  });
+                  testingTown.updatePlayerLocation(player, firstConversationAreaLocation);
+                  expect(testingTown.conversationAreas.length).toBe(2);
+                });
+              });
+            });
+            describe('should not add players that is not in a created conversationArea', () => {
+              it('should not add players in created conversationArea', () => {
+                const player = new Player('testing player');
+                testingTown.addPlayer(player);
+                const dir: Direction = 'front';
+                const firstConversationAreaLocations = [
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 605,
+                    y: 605,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 605,
+                    y: 600,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 600,
+                    y: 605,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 10000,
+                    y: 610,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 605,
+                    y: 609,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 605,
+                    y: 604,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 605,
+                    y: 604,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 595,
+                    y: 595,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 595,
+                    y: 600,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 595,
+                    y: 605,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 600,
+                    y: 595,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 605,
+                    y: 595,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 700,
+                    y: 595,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 1000,
+                    y: 595,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 200,
+                    y: 595,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 200,
+                    y: 595,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 200,
+                    y: 595,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 600,
+                    y: 200,
+                    conversationLabel: '',
+                  },
+                  {
+                    moving: false,
+                    rotation: dir,
+                    x: 600,
+                    y: 1000,
+                    conversationLabel: '',
+                  },
+                ];
+                firstConversationAreaLocations.forEach(element => {
+                  mockListeners.forEach(mockReset);
+                  testingTown.updatePlayerLocation(player, element);
+                  const newBoundBox: BoundingBox = {
+                    x: 600,
+                    y: 600,
+                    width: 10,
+                    height: 10,
+                  };
+                  const label = nanoid();
+                  const secondAreaInfo = {
+                    conversationLabel: label,
+                    conversationTopic: nanoid(),
+                    boundingBox: newBoundBox,
+                  };
+                  const newAreaLocation = {
+                    moving: false,
+                    rotation: dir,
+                    x: 600,
+                    y: 600,
+                    conversationLabel: label,
+                  };
+
+                  const newConversationArea =
+                    TestUtils.createConversationForTesting(secondAreaInfo);
+                  expect(newConversationArea.occupantsByID.length).toBe(0);
+                  expect(testingTown.addConversationArea(newConversationArea)).toBe(true);
+                  expect(testingTown.conversationAreas.length).toBe(3);
+                  expect(testingTown.conversationAreas[0]).toBe(correctTopicConversationArea);
+                  expect(testingTown.conversationAreas[1]).toBe(firstConversationArea);
+                  expect(testingTown.conversationAreas[2]).toBe(newConversationArea);
+                  expect(newConversationArea.occupantsByID.length).toBe(0);
+                  expect(player.activeConversationArea).toBe(undefined);
+                  mockListeners.forEach(listener => {
+                    expect(listener.onConversationAreaUpdated).toBeCalledTimes(1);
+                    expect(listener.onConversationAreaUpdated).toBeCalledWith(newConversationArea);
+                  });
+                  testingTown.updatePlayerLocation(player, newAreaLocation);
+                  testingTown.updatePlayerLocation(player, firstConversationAreaLocation);
+                  expect(testingTown.conversationAreas.length).toBe(2);
+                });
+              });
+            });
+            it('should not add another conversationArea with the same label', () => {
+              const newBoundBox: BoundingBox = {
+                x: 10,
+                y: 10,
+                width: 10,
+                height: 10,
+              };
+              const sameLabelConversationArea: ServerConversationArea = {
+                boundingBox: newBoundBox,
+                label: 'testing label',
+                occupantsByID: [],
+                topic: 'testing topic',
+              };
+              expect(testingTown.addConversationArea(sameLabelConversationArea)).toBe(false);
+              expect(testingTown.conversationAreas.length).toBe(2);
+              expect(testingTown.conversationAreas[0]).toBe(correctTopicConversationArea);
+              mockListeners.forEach(listener => {
+                expect(listener.onConversationAreaUpdated).not.toBeCalled();
+              });
+              mockListeners.forEach(mockReset);
+            });
+            it('should add not overLappingBoxes', () => {
+              const boundBoxes = [
+                {
+                  x: 410,
+                  y: 410,
+                  width: 10,
+                  height: 10,
+                },
+                {
+                  x: 390,
+                  y: 390,
+                  width: 10,
+                  height: 10,
+                },
+                {
+                  x: 400,
+                  y: 410,
+                  width: 10,
+                  height: 10,
+                },
+                {
+                  x: 410,
+                  y: 400,
+                  width: 10,
+                  height: 10,
+                },
+                {
+                  x: 390,
+                  y: 400,
+                  width: 10,
+                  height: 10,
+                },
+                {
+                  x: 390,
+                  y: 410,
+                  width: 10,
+                  height: 10,
+                },
+                {
+                  x: 400,
+                  y: 390,
+                  width: 10,
+                  height: 10,
+                },
+                {
+                  x: 410,
+                  y: 390,
+                  width: 10,
+                  height: 10,
+                },
+              ];
+              boundBoxes.forEach((element, index) => {
+                const secondAreaInfo = {
+                  boundingBox: element,
+                };
+                const notOverLappingBoxes: ServerConversationArea =
+                  TestUtils.createConversationForTesting(secondAreaInfo);
+                expect(testingTown.addConversationArea(notOverLappingBoxes)).toBe(true);
+                expect(testingTown.conversationAreas.length).toBe(2 + index + 1);
+                mockListeners.forEach(listener => {
+                  expect(listener.onConversationAreaUpdated).toBeCalledWith(notOverLappingBoxes);
+                  expect(listener.onConversationAreaUpdated).toBeCalledTimes(1);
+                });
+                mockListeners.forEach(mockReset);
+              });
+            });
+            it('should add not overLappingBoxes', () => {
+              const boundBoxes = [
+                {
+                  x: 400,
+                  y: 400,
+                  width: 10,
+                  height: 10,
+                },
+                {
+                  x: 401,
+                  y: 401,
+                  width: 1,
+                  height: 1,
+                },
+                {
+                  x: 500,
+                  y: 500,
+                  width: 400,
+                  height: 400,
+                },
+                {
+                  x: 390,
+                  y: 400,
+                  width: 11,
+                  height: 10,
+                },
+                {
+                  x: 410,
+                  y: 390,
+                  width: 11,
+                  height: 11,
+                },
+              ];
+              boundBoxes.forEach(element => {
+                const secondAreaInfo = {
+                  boundingBox: element,
+                };
+                const notOverLappingBoxes: ServerConversationArea =
+                  TestUtils.createConversationForTesting(secondAreaInfo);
+                expect(testingTown.addConversationArea(notOverLappingBoxes)).toBe(false);
+                expect(testingTown.conversationAreas.length).toBe(2);
+                mockListeners.forEach(listener => {
+                  expect(listener.onConversationAreaUpdated).not.toBeCalled();
+                });
+                mockListeners.forEach(mockReset);
+              });
+            });
+          });
+        });
+      });
     });
   });
+
   describe('updatePlayerLocation', () => {
     let testingTown: CoveyTownController;
     beforeEach(() => {
